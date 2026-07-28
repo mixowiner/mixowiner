@@ -8,6 +8,29 @@ const LOOP_IN_SEC = 2;
 export function VideoStage({ gameState }: { gameState: GameState }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [duration, setDuration] = useState(0);
+  // Live countdown calculated from bettingClosesAt timestamp
+  const [liveCountdown, setLiveCountdown] = useState<number>(0);
+
+  // Live countdown ticker - uses bettingClosesAt for accuracy
+  useEffect(() => {
+    if (gameState.phase !== "preparing") {
+      setLiveCountdown(0);
+      return;
+    }
+
+    const tick = () => {
+      if (gameState.bettingClosesAt) {
+        const remaining = (new Date(gameState.bettingClosesAt).getTime() - Date.now()) / 1000;
+        setLiveCountdown(Math.max(0, remaining));
+      } else if (gameState.prepSecondsLeft !== null) {
+        setLiveCountdown(Math.max(0, gameState.prepSecondsLeft));
+      }
+    };
+
+    tick();
+    const id = setInterval(tick, 100);
+    return () => clearInterval(id);
+  }, [gameState.phase, gameState.bettingClosesAt, gameState.prepSecondsLeft]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -15,15 +38,11 @@ export function VideoStage({ gameState }: { gameState: GameState }) {
 
     if (gameState.phase === "preparing") {
       v.pause();
-      try {
-        v.currentTime = 0;
-      } catch {}
+      try { v.currentTime = 0; } catch {}
     } else if (gameState.phase === "crashed") {
       v.pause();
     } else if (gameState.phase === "running") {
-      try {
-        v.currentTime = 0;
-      } catch {}
+      try { v.currentTime = 0; } catch {}
       v.play().catch(() => {});
     }
   }, [gameState.phase]);
@@ -56,114 +75,92 @@ export function VideoStage({ gameState }: { gameState: GameState }) {
     };
   }, [gameState.phase, duration]);
 
-  const prepSeconds = gameState.prepSecondsLeft || 0;
-  const prepProgress =
-    gameState.prepSecondsLeft !== null
-      ? Math.max(0, Math.min(1, gameState.prepSecondsLeft / 8))
-      : 1;
+  const prepSeconds = Math.ceil(liveCountdown);
+  const prepProgress = gameState.bettingClosesAt
+    ? Math.max(0, Math.min(1, liveCountdown / 7))
+    : gameState.prepSecondsLeft !== null
+    ? Math.max(0, Math.min(1, gameState.prepSecondsLeft / 8))
+    : 1;
 
   return (
-    <div className="relative isolate w-full h-full overflow-hidden rounded-2xl sm:rounded-3xl border border-white/10 bg-[#050914] shadow-2xl flex items-center justify-center">
+    <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-white/10 shadow-2xl">
       <video
         ref={videoRef}
-        className="absolute inset-0 z-[1] h-full w-full object-cover opacity-60"
+        src="/rocket.mp4"
         muted
         playsInline
         preload="auto"
-        aria-hidden
-      >
-        <source src="/game/bgcrash.webm" type="video/webm" />
-        <source src="/game/bgcrash.mp4" type="video/mp4" />
-      </video>
+        className="absolute inset-0 w-full h-full object-cover"
+      />
 
       {/* Overlays */}
-      <div
-        className="pointer-events-none absolute inset-0 z-[2] bg-[radial-gradient(ellipse_60%_60%_at_50%_50%,transparent_10%,rgba(5,9,20,0.85)_100%)]"
-        aria-hidden
-      />
-      <div
-        className="pointer-events-none absolute inset-0 z-[2] bg-gradient-to-t from-black/80 via-transparent to-transparent"
-        aria-hidden
-      />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
 
       {/* Scanlines */}
-      <div
-        className="pointer-events-none absolute inset-0 z-[3] opacity-[0.03] mix-blend-overlay"
-        style={{
-          backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 1px, #fff 1px, #fff 2px)",
-        }}
-      />
+      <div className="absolute inset-0 pointer-events-none opacity-10" style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.3) 2px, rgba(0,0,0,0.3) 4px)' }} />
 
       {/* Top right badge */}
-      <div className="absolute top-3 right-3 sm:top-4 sm:right-4 z-[10] flex items-center gap-2 bg-black/50 backdrop-blur-md px-3 py-1 rounded-full border border-white/10">
+      <div className="absolute top-3 right-3 z-10">
         {gameState.phase === "running" && (
           <>
-            <div className="w-2 h-2 rounded-full bg-primary animate-pulse shadow-[0_0_8px_rgba(0,240,128,0.8)]" />
-            <span className="text-[10px] font-bold tracking-widest text-primary uppercase">Live</span>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-green-500/20 text-green-400 border border-green-500/30 backdrop-blur-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              Live
+            </span>
           </>
         )}
         {gameState.phase === "preparing" && (
           <>
-            <div className="w-2 h-2 rounded-full bg-white/40" />
-            <span className="text-[10px] font-bold tracking-widest text-white/50 uppercase">Waiting</span>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 backdrop-blur-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
+              Waiting
+            </span>
           </>
         )}
         {gameState.phase === "crashed" && (
           <>
-            <div className="w-2 h-2 rounded-full bg-accent" />
-            <span className="text-[10px] font-bold tracking-widest text-accent uppercase">Crashed</span>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 backdrop-blur-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+              Crashed
+            </span>
           </>
         )}
       </div>
 
-      <div className="absolute inset-0 z-[6] flex flex-col items-center justify-center">
+      <div className="absolute inset-0 flex items-center justify-center z-10">
         {gameState.phase === "preparing" && (
-          <div className="flex flex-col items-center text-center w-full h-full">
-            <div className="absolute top-0 inset-x-0 h-1.5 bg-black/40">
-              <div
-                className="h-full bg-gradient-to-r from-primary/50 to-primary shadow-[0_0_15px_var(--color-brand)] transition-all duration-1000 ease-linear"
-                style={{ width: `${(1 - prepProgress) * 100}%` }}
-              />
-            </div>
-            <div className="flex flex-col items-center justify-center flex-1">
-              <span className="mb-4 text-xs sm:text-sm font-extrabold uppercase tracking-[0.3em] text-white/50">
-                Next Round
-              </span>
-              <div className="relative flex items-center justify-center w-24 h-24 sm:w-32 sm:h-32">
-                <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
-                  <circle cx="50" cy="50" r="46" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="4" />
-                  <circle
-                    cx="50"
-                    cy="50"
-                    r="46"
-                    fill="none"
-                    stroke="var(--color-brand)"
-                    strokeWidth="4"
-                    strokeDasharray="289"
-                    strokeDashoffset={289 * prepProgress}
-                    className="transition-all duration-1000 ease-linear drop-shadow-[0_0_8px_var(--color-brand)]"
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <span className="text-4xl sm:text-5xl font-black font-mono tracking-tighter text-white/90">
-                  {prepSeconds}
-                </span>
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative w-24 h-24">
+              <svg className="w-24 h-24 -rotate-90" viewBox="0 0 96 96">
+                <circle cx="48" cy="48" r="40" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="6" />
+                <circle
+                  cx="48" cy="48" r="40" fill="none"
+                  stroke="rgba(251,191,36,0.9)" strokeWidth="6"
+                  strokeDasharray={`${2 * Math.PI * 40}`}
+                  strokeDashoffset={`${2 * Math.PI * 40 * (1 - prepProgress)}`}
+                  strokeLinecap="round"
+                  style={{ transition: 'stroke-dashoffset 0.1s linear' }}
+                />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-white/60 text-[10px] font-semibold uppercase tracking-widest">Next Round</span>
+                <span className="text-white text-3xl font-black tabular-nums leading-none">{prepSeconds}</span>
               </div>
             </div>
           </div>
         )}
 
         {gameState.phase === "running" && (
-          <div className="flex flex-col items-center animate-winBurst">
-            <SmoothMultiplier className="text-[4rem] sm:text-[6rem] lg:text-[7rem] font-black leading-none tracking-tighter bg-gradient-to-b from-white via-white to-primary bg-clip-text text-transparent drop-shadow-[0_0_40px_rgba(0,240,128,0.4)] animate-multiplierGlow" />
-            <span className="mt-1 sm:mt-2 text-[10px] sm:text-xs font-bold tracking-[0.3em] uppercase text-white/40">Multiplier</span>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-white/50 text-sm font-semibold uppercase tracking-widest">Multiplier</span>
+            <SmoothMultiplier />
           </div>
         )}
 
         {gameState.phase === "crashed" && (
-          <div className="flex flex-col items-center gap-2 rounded-2xl border border-accent/40 bg-black/40 px-8 sm:px-12 py-5 sm:py-6 shadow-[0_10px_50px_-10px_rgba(255,62,118,0.5)] backdrop-blur-xl animate-shake">
-            <span className="text-[10px] sm:text-[11px] font-extrabold uppercase tracking-[0.3em] text-accent/90">Crashed At</span>
-            <span className="text-4xl sm:text-5xl font-black font-mono leading-none tracking-tighter text-accent drop-shadow-[0_0_15px_rgba(255,62,118,0.6)]">
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-red-400/80 text-sm font-semibold uppercase tracking-widest">Crashed At</span>
+            <span className="text-red-400 text-5xl font-black drop-shadow-lg">
               {formatMultiplier(gameState.multiplier)}
             </span>
           </div>
