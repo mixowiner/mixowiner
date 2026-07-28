@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { socket } from './crashSocket';
 import { playCrashSound, setCrashSoundsMuted, crashSoundsMuted, startMusic, stopMusic, crashMusicMuted, setCrashMusicMuted } from './crashSounds';
+import type { TickData } from './supabaseGameEngine';
+import { engine } from './supabaseGameEngine';
 
 export const getSessionId = (panel: 'a' | 'b') => {
   const key = panel === 'a' ? 'crash:sessionIdA' : 'crash:sessionIdB';
@@ -85,7 +87,7 @@ export function useCrashGame() {
       setIsConnected(false);
     }
     
-    function onTick(data: any) {
+    function onTick(data: TickData) {
       gameSync.serverMultiplier = data.multiplier;
       gameSync.phase = data.phase;
       gameSync.lastTickMs = performance.now();
@@ -95,7 +97,7 @@ export function useCrashGame() {
       }
       
       setGameState(prev => {
-        const next = { ...prev, ...data };
+        const next = { ...prev, ...data, roundId: data.roundId };
         
         if (prev.phase === 'preparing' && next.phase === 'running') {
           playCrashSound('roundStart');
@@ -143,6 +145,10 @@ export function useCrashGame() {
       });
     }
 
+    function onHistory(multipliers: number[]) {
+      setHistory(multipliers.slice(0, 10));
+    }
+
     function onAutoCashout(data: { sessionId: string, payout: number, multiplier: number }) {
       const panel = data.sessionId === sessionIdA ? 'a' : data.sessionId === sessionIdB ? 'b' : null;
       if (!panel) return;
@@ -159,8 +165,9 @@ export function useCrashGame() {
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
-    socket.on('game:tick', onTick);
-    socket.on('game:autoCashout', onAutoCashout);
+    socket.on('game:tick', onTick as (...args: unknown[]) => void);
+    socket.on('game:history', onHistory as (...args: unknown[]) => void);
+    socket.on('game:autoCashout', onAutoCashout as (...args: unknown[]) => void);
 
     if (socket.connected) {
       onConnect();
@@ -169,8 +176,9 @@ export function useCrashGame() {
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
-      socket.off('game:tick', onTick);
-      socket.off('game:autoCashout', onAutoCashout);
+      socket.off('game:tick', onTick as (...args: unknown[]) => void);
+      socket.off('game:history', onHistory as (...args: unknown[]) => void);
+      socket.off('game:autoCashout', onAutoCashout as (...args: unknown[]) => void);
     };
   }, [setBalance]);
 
@@ -183,9 +191,10 @@ export function useCrashGame() {
     const sessionId = panel === 'a' ? sessionIdA : sessionIdB;
     setBalance(balance - stake);
     
-    socket.emit('bet:place', { sessionId, stakeUsd: stake, autoCashout }, (res: any) => {
-      if (res?.ok) {
-        setBetState(prev => ({ ...prev, [panel]: { status: 'pending', stake, autoCashout, roundId: res.roundId } }));
+    socket.emit('bet:place', { sessionId, stakeUsd: stake, autoCashout }, (res: unknown) => {
+      const r = res as { ok: boolean; roundId?: string };
+      if (r?.ok) {
+        setBetState(prev => ({ ...prev, [panel]: { status: 'pending', stake, autoCashout, roundId: r.roundId ?? '' } }));
         playCrashSound('bet');
       } else {
         setBalance(parseFloat(localStorage.getItem('crash:balance') ?? '1000') + stake);
@@ -198,8 +207,9 @@ export function useCrashGame() {
     if (current.status !== 'pending') return;
     const sessionId = panel === 'a' ? sessionIdA : sessionIdB;
     
-    socket.emit('bet:cancel', { sessionId }, (res: any) => {
-      if (res?.ok) {
+    socket.emit('bet:cancel', { sessionId }, (res: unknown) => {
+      const r = res as { ok: boolean };
+      if (r?.ok) {
         const stake = current.status === 'pending' ? current.stake : 0;
         setBalance(balance + stake);
         setBetState(prev => ({ ...prev, [panel]: { status: 'idle' } }));
@@ -214,10 +224,11 @@ export function useCrashGame() {
     if (gameState.phase !== 'running') return;
     const sessionId = panel === 'a' ? sessionIdA : sessionIdB;
 
-    socket.emit('bet:cashout', { sessionId }, (res: any) => {
-      if (res?.ok) {
-        setBetState(prev => ({ ...prev, [panel]: { status: 'won', stake: (current as any).stake, payout: res.payout, multiplier: res.multiplier } }));
-        setBalance(parseFloat(localStorage.getItem('crash:balance') ?? '1000') + res.payout);
+    socket.emit('bet:cashout', { sessionId }, (res: unknown) => {
+      const r = res as { ok: boolean; payout?: number; multiplier?: number };
+      if (r?.ok) {
+        setBetState(prev => ({ ...prev, [panel]: { status: 'won', stake: (current as { stake: number }).stake, payout: r.payout ?? 0, multiplier: r.multiplier ?? 1 } }));
+        setBalance(parseFloat(localStorage.getItem('crash:balance') ?? '1000') + (r.payout ?? 0));
         playCrashSound('win');
       }
     });

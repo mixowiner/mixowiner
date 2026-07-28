@@ -1,0 +1,12 @@
+# Cloudflare Pages configuration
+# Deploy: npx wrangler pages deploy dist
+
+name = "rocketx-game"
+pages_build_output_dir = "dist"
+
+[env.production.vars]
+NODE_ENV = "production"
+
+# Build command for Cloudflare Pages dashboard:
+# Build command: npm run build
+# Build output directory: dist
