@@ -45,13 +45,11 @@ class SupabaseGameEngine {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private lastRoundId: string | null = null;
   private lastPhase: Phase = 'preparing';
-  // Track pending bets that were placed while disconnected / page refresh
-  // Key: sessionId, Value: pending bet roundId
-  private pendingBets: Map<string, string> = new Map();
-  // Interpolation state for smooth multiplier during 'running'
   private runningStartTime: number | null = null;
   private serverMultiplierAtSync: number = 1;
   private rafId: number = 0;
+  // Tracks whether we've already poked the engine for this transition
+  private pokedForRound: string | null = null;
 
   on(event: string, listener: Listener) {
     if (!this.listeners[event]) this.listeners[event] = [];
@@ -67,17 +65,12 @@ class SupabaseGameEngine {
     (this.listeners[event] || []).forEach((l) => l(...args));
   }
 
-  // Fake socket-like emit called by the game hook
-  // Maps to REST calls to edge functions
   async socketEmit(
     event: string,
     payload: unknown,
     callback?: (res: unknown) => void
   ) {
-    if (event === 'session:join') {
-      // No-op for server model - sessions tracked by session_id in bets table
-      return;
-    }
+    if (event === 'session:join') return;
 
     if (event === 'bet:place') {
       const { sessionId, stakeUsd, autoCashout } = payload as {
@@ -103,8 +96,6 @@ class SupabaseGameEngine {
     if (event === 'bet:cancel') {
       const { sessionId } = payload as { sessionId: string };
       try {
-        // Cancel by marking bet cancelled via a dedicated endpoint
-        // For now we call place-bet won't exist, so just call cancel
         const res = await fetch(`${FUNCTIONS_URL}/cancel-bet`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
@@ -140,11 +131,6 @@ class SupabaseGameEngine {
     const phase = row.phase;
     const multiplier = parseFloat(String(row.multiplier ?? 1));
 
-    // Detect phase transitions for sound/event purposes
-    const phaseChanged = phase !== this.lastPhase;
-    const roundChanged = roundId !== this.lastRoundId;
-
-    // Track running start time for smooth interpolation
     if (phase === 'running' && this.lastPhase !== 'running') {
       this.runningStartTime = performance.now();
       this.serverMultiplierAtSync = multiplier;
@@ -165,13 +151,47 @@ class SupabaseGameEngine {
     };
 
     this.emit('game:tick', tick);
+
+    // KEY FIX: if betting window just expired but backend hasn't transitioned yet,
+    // poke the game-engine immediately so we don't wait up to 15s for next cron
+    if (phase === 'preparing' && row.betting_closes_at) {
+      const closesAt = new Date(row.betting_closes_at).getTime();
+      const now = Date.now();
+      if (now >= closesAt && this.pokedForRound !== roundId) {
+        this.pokedForRound = roundId;
+        // Small delay to avoid race with cron that might be running concurrently
+        setTimeout(() => {
+          fetch(`${FUNCTIONS_URL}/game-engine`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+            body: '{}',
+          }).catch(() => {});
+        }, 300);
+      }
+    }
+
+    // KEY FIX: if crashed and betting_opens_at has passed, poke engine to reset
+    if (phase === 'crashed' && row.betting_opens_at) {
+      const opensAt = new Date(row.betting_opens_at).getTime();
+      const now = Date.now();
+      const pokeKey = `crashed-${row.current_round_id ?? roundId}`;
+      if (now >= opensAt && this.pokedForRound !== pokeKey) {
+        this.pokedForRound = pokeKey;
+        setTimeout(() => {
+          fetch(`${FUNCTIONS_URL}/game-engine`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+            body: '{}',
+          }).catch(() => {});
+        }, 300);
+      }
+    }
   }
 
   private startInterpolation() {
     const loop = () => {
       if (this.lastPhase === 'running' && this.runningStartTime !== null) {
         const elapsed = (performance.now() - this.runningStartTime) / 1000;
-        // Interpolate multiplier using same formula as server: exp(elapsed * 0.15)
         const interpolated = parseFloat(
           (this.serverMultiplierAtSync * Math.exp(elapsed * 0.15)).toFixed(2)
         );
@@ -191,7 +211,7 @@ class SupabaseGameEngine {
   }
 
   async start() {
-    // 1. Subscribe to Realtime on game_state for instant phase transitions
+    // 1. Realtime subscription for instant phase transitions
     this.realtimeChannel = supabase
       .channel('game_state_changes')
       .on(
@@ -199,7 +219,6 @@ class SupabaseGameEngine {
         { event: 'UPDATE', schema: 'public', table: 'game_state', filter: 'id=eq.current' },
         (payload) => {
           this.applyState(payload.new as GameStateRow);
-          // When a new running phase starts, resync server multiplier
           if ((payload.new as GameStateRow).phase === 'running') {
             this.runningStartTime = performance.now();
             this.serverMultiplierAtSync = parseFloat(String((payload.new as GameStateRow).multiplier ?? 1));
@@ -216,7 +235,7 @@ class SupabaseGameEngine {
         }
       });
 
-    // 2. Poll game-state every 1s for auth-bets and history sync
+    // 2. Poll game-state every 1s
     await this.fetchAndEmitState();
     this.pollTimer = setInterval(() => this.fetchAndEmitState(), 1000);
 
@@ -237,7 +256,6 @@ class SupabaseGameEngine {
       };
 
       if (data.state) {
-        // Re-anchor interpolation on each server poll
         if (data.state.phase === 'running') {
           this.runningStartTime = performance.now();
           this.serverMultiplierAtSync = parseFloat(String(data.state.multiplier ?? 1));
