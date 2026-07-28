@@ -86,12 +86,14 @@ export function VideoStage({ gameState }: { gameState: GameState }) {
     <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-white/10 shadow-2xl">
       <video
         ref={videoRef}
-        src="/rocket.mp4"
         muted
         playsInline
         preload="auto"
         className="absolute inset-0 w-full h-full object-cover"
-      />
+      >
+        <source src="/game/bgcrash.webm" type="video/webm" />
+        <source src="/game/bgcrash.mp4" type="video/mp4" />
+      </video>
 
       {/* Overlays */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
