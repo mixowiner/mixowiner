@@ -50,6 +50,8 @@ class SupabaseGameEngine {
   private rafId: number = 0;
   // Tracks whether we've already poked the engine for this transition
   private pokedForRound: string | null = null;
+  // Tracks poke for preparing-no-round, resets when a round_id appears
+  private preparingNoRoundPokeAt: number = 0;
 
   on(event: string, listener: Listener) {
     if (!this.listeners[event]) this.listeners[event] = [];
@@ -151,6 +153,26 @@ class SupabaseGameEngine {
     };
 
     this.emit('game:tick', tick);
+
+    // FIX: if preparing but no round exists yet (just transitioned from crashed),
+    // poke the engine immediately so we don't wait up to 15s for the cron.
+    // Re-poke every 2s until the round is created (betting_closes_at appears).
+    if (phase === 'preparing' && !row.current_round_id && !row.betting_closes_at) {
+      const now = Date.now();
+      if (now - this.preparingNoRoundPokeAt > 2000) {
+        this.preparingNoRoundPokeAt = now;
+        setTimeout(() => {
+          fetch(`${FUNCTIONS_URL}/game-engine`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+            body: '{}',
+          }).catch(() => {});
+        }, 100);
+      }
+    } else if (phase === 'preparing' && row.current_round_id) {
+      // Reset so we can poke again next time we're in no-round state
+      this.preparingNoRoundPokeAt = 0;
+    }
 
     // KEY FIX: if betting window just expired but backend hasn't transitioned yet,
     // poke the game-engine immediately so we don't wait up to 15s for next cron
