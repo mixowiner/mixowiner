@@ -1,1 +1,2 @@
-# This file intentionally left empty - Cloudflare Pages auto-deploys from GitHub
+# Cloudflare Pages deploys automatically via its native GitHub integration.
+# No GitHub Actions workflow needed.
